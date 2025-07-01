@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # lostandfound
 
 A new Flutter project.
@@ -14,3 +15,7 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+=======
+# PlanB
+Project plan B
+>>>>>>> f333b4097f137907708984bbf1eb7e2cd914c3fa
