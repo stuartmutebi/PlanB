@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:lostandfound/models/item.dart';
 import 'dart:io';
+import 'package:uuid/uuid.dart';
 
 class ItemService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -97,5 +98,140 @@ class ItemService {
     final words2 = location2.toLowerCase().split(' ');
     final commonWords = words1.where((word) => words2.contains(word)).length;
     return commonWords / (words1.length + words2.length - commonWords);
+  }
+
+  Future<String> uploadClaimProofPhoto(File photoFile) async {
+    final String fileName = 'claim_' + DateTime.now().millisecondsSinceEpoch.toString();
+    final Reference ref = _storage.ref().child('claim_proof/$fileName');
+    final UploadTask uploadTask = ref.putFile(photoFile);
+    final TaskSnapshot taskSnapshot = await uploadTask;
+    return await taskSnapshot.ref.getDownloadURL();
+  }
+
+  Future<void> submitClaimRequest({
+    required String itemId,
+    required String claimantUserId,
+    String? answer,
+    String? photoUrl,
+  }) async {
+    final claimRequest = ClaimRequest(
+      id: const Uuid().v4(),
+      itemId: itemId,
+      claimantUserId: claimantUserId,
+      answer: answer,
+      photoUrl: photoUrl,
+      timestamp: DateTime.now(),
+      status: 'pending',
+    );
+    await _firestore.collection('claim_requests').doc(claimRequest.id).set(claimRequest.toMap());
+  }
+
+  Stream<List<ClaimRequest>> getClaimRequestsForItem(String itemId) {
+    return _firestore
+        .collection('claim_requests')
+        .where('itemId', isEqualTo: itemId)
+        .orderBy('timestamp', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map((doc) => ClaimRequest.fromFirestore(doc)).toList());
+  }
+
+  Future<void> updateClaimRequestStatus(String claimRequestId, String status) async {
+    await _firestore.collection('claim_requests').doc(claimRequestId).update({'status': status});
+    if (status == 'approved') {
+      // Get the claim request to find the itemId
+      final claimDoc = await _firestore.collection('claim_requests').doc(claimRequestId).get();
+      final claimData = claimDoc.data();
+      if (claimData != null) {
+        final itemId = claimData['itemId'];
+        // Mark item as recovered
+        await _firestore.collection('items').doc(itemId).update({'isRecovered': true});
+        // Reject all other pending claims for this item
+        final pendingClaims = await _firestore
+            .collection('claim_requests')
+            .where('itemId', isEqualTo: itemId)
+            .where('status', isEqualTo: 'pending')
+            .get();
+        for (final doc in pendingClaims.docs) {
+          if (doc.id != claimRequestId) {
+            await doc.reference.update({'status': 'rejected'});
+          }
+        }
+      }
+    }
+  }
+
+  Future<bool> hasUserClaimedItem(String itemId, String userId) async {
+    final query = await _firestore
+        .collection('claim_requests')
+        .where('itemId', isEqualTo: itemId)
+        .where('claimantUserId', isEqualTo: userId)
+        .get();
+    return query.docs.isNotEmpty;
+  }
+
+  /// Stream of potential matches for a user's items
+  Stream<Map<String, List<Item>>> streamPotentialMatchesForUser(String userId) async* {
+    await for (final userItems in getUserItems(userId)) {
+      final Map<String, List<Item>> matchesMap = {};
+      for (final item in userItems) {
+        final matches = await findMatchingItems(item);
+        matchesMap[item.id] = matches;
+      }
+      yield matchesMap;
+    }
+  }
+
+  /// Create a chat document for an item and two users if it doesn't exist
+  Future<String> createChatIfNotExists({
+    required String itemId,
+    required String userA,
+    required String userB,
+  }) async {
+    final chatQuery = await _firestore
+        .collection('chats')
+        .where('itemId', isEqualTo: itemId)
+        .where('participants', arrayContains: userA)
+        .get();
+    for (final doc in chatQuery.docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      final participants = List<String>.from(data['participants'] ?? []);
+      if (participants.contains(userB)) {
+        return doc.id;
+      }
+    }
+    final chatDoc = await _firestore.collection('chats').add({
+      'itemId': itemId,
+      'participants': [userA, userB],
+      'createdAt': DateTime.now(),
+    });
+    return chatDoc.id;
+  }
+
+  /// Send a message in a chat
+  Future<void> sendMessage({
+    required String chatId,
+    required String senderId,
+    required String text,
+  }) async {
+    await _firestore
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .add({
+      'senderId': senderId,
+      'text': text,
+      'timestamp': DateTime.now(),
+    });
+  }
+
+  /// Stream messages for a chat
+  Stream<List<ChatMessage>> streamMessages(String chatId) {
+    return _firestore
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp')
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map((doc) => ChatMessage.fromFirestore(doc)).toList());
   }
 } 

@@ -1,3 +1,7 @@
+android {
+    ndkVersion = "25.2.9519653"
+}
+
 buildscript {
     repositories {
         google()
